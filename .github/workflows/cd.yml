@@ -2,7 +2,7 @@ name: CD (Docker Build & Push)
 
 on:
   push:
-    branches: [ "development", "production" ]
+    branches: [ "production" ]
 
 permissions:
   contents: read
