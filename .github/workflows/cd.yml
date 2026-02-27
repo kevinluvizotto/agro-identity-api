@@ -11,7 +11,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     env:
-      DOTNET_PROJECT: ./src/AgroX.Api/AgroX.Api.csproj   # <-- AJUSTE
+      DOTNET_PROJECT: ./src/AgroIdentity.Api/AgroIdentity.Api.csproj
 
     steps:
       - uses: actions/checkout@v4
