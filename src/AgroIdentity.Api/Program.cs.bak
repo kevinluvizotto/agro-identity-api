@@ -1,0 +1,131 @@
+using System.Security.Claims;
+using System.Text;
+using AgroIdentity.Api.Data;
+using AgroIdentity.Api.Domain;
+using AgroIdentity.Api.Dtos;
+using AgroIdentity.Api.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// EF Core (Azure SQL) - 1 DB único, histórico de migration isolado no schema identity
+builder.Services.AddDbContext<IdentityDbContext>(opt =>
+opt.UseSqlServer(
+    builder.Configuration.GetConnectionString("Default"),
+    sql => sql
+        .MigrationsHistoryTable("__EFMigrationsHistory", "identity")
+        .EnableRetryOnFailure(
+            maxRetryCount: 10,
+            maxRetryDelay: TimeSpan.FromSeconds(10),
+            errorNumbersToAdd: null
+        )
+);
+
+builder.Services.AddScoped<JwtTokenService>();
+
+// JWT Auth
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(opt =>
+    {
+        var key = builder.Configuration["Jwt:Key"]!;
+        opt.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+
+            ValidateAudience = true,
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
+
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+// Swagger + botão Authorize (Bearer)
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "AgroIdentity API", Version = "v1" });
+
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Cole: Bearer {seu_token}"
+    });
+});
+
+var app = builder.Build();
+
+app.UseSwagger();
+app.UseSwaggerUI();
+
+app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+app.MapPost("/auth/register", async (RegisterRequest req, IdentityDbContext db) =>
+{
+    var email = req.Email.Trim().ToLowerInvariant();
+
+    if (string.IsNullOrWhiteSpace(req.Name))
+        return Results.BadRequest(new { message = "Name é obrigatório." });
+
+    if (string.IsNullOrWhiteSpace(req.Password) || req.Password.Length < 6)
+        return Results.BadRequest(new { message = "Senha deve ter pelo menos 6 caracteres." });
+
+    var exists = await db.Users.AnyAsync(u => u.Email == email);
+    if (exists) return Results.Conflict(new { message = "Email já cadastrado." });
+
+    var user = new User
+    {
+        Name = req.Name.Trim(),
+        Email = email,
+        PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.Password)
+    };
+
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/users/{user.Id}", new { user.Id, user.Name, user.Email });
+});
+
+app.MapPost("/auth/login", async (LoginRequest req, IdentityDbContext db, JwtTokenService jwt) =>
+{
+    var email = req.Email.Trim().ToLowerInvariant();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+    if (user is null) return Results.Unauthorized();
+    if (!BCrypt.Net.BCrypt.Verify(req.Password, user.PasswordHash)) return Results.Unauthorized();
+
+    var (token, expiresAt) = jwt.Generate(user);
+    return Results.Ok(new AuthResponse(token, expiresAt));
+});
+
+app.MapGet("/me", [Authorize] (ClaimsPrincipal principal) =>
+{
+    var idStr = principal.FindFirstValue(ClaimTypes.NameIdentifier);
+    var name = principal.FindFirstValue(ClaimTypes.Name) ?? "";
+    var email = principal.FindFirstValue(ClaimTypes.Email) ?? "";
+
+    if (idStr is null || !Guid.TryParse(idStr, out var id))
+        return Results.Unauthorized();
+
+    return Results.Ok(new MeResponse(id, name, email));
+});
+
+app.Run();
