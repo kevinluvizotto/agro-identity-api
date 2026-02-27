@@ -1,0 +1,34 @@
+name: CI (.NET)
+
+on:
+  pull_request:
+    branches: [ "development" ]
+  push:
+    branches: [ "development", "production" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_PROJECT: ./src/AgroIdentity.Api/AgroIdentity.Api.csproj
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore ${{ env.DOTNET_PROJECT }}
+
+      - name: Build
+        run: dotnet build ${{ env.DOTNET_PROJECT }} -c Release --no-restore
+
+      # Se tiver testes, habilite:
+      # - name: Test
+      #   run: dotnet test -c Release --no-build
